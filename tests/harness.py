@@ -151,6 +151,8 @@ def py_request(opts):
         if auth != "Bearer SESSIONJWT":
             return reply(401, b"")
         return reply(201, {"name": json.loads(body)["name"], "id": 1, "token": "LONGTOKEN"})
+    if parsed.path.startswith("/api/users/api-tokens/") and method == "DELETE":
+        return reply(200 if auth == "Bearer SESSIONJWT" else 401, {"token_delete": "x"})
     if auth != "Bearer LONGTOKEN":
         return reply(401, {"detail": "Not authenticated"})
     if parsed.path == "/api/recipes":

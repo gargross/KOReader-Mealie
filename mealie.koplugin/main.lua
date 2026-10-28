@@ -112,6 +112,23 @@ local function itemIndex(menu, item)
     return 1
 end
 
+-- KOReader's sinks enforce socketutil's total timeout (LuaSec's wrapped socket
+-- has no total timeout of its own); fall back to plain ltn12 on old builds.
+-- Create them *after* socketutil:set_timeout(), which they read.
+local function timedTableSink(t)
+    if socketutil.table_sink then
+        return (socketutil.table_sink(t))
+    end
+    return ltn12.sink.table(t)
+end
+
+local function timedFileSink(fh)
+    if socketutil.file_sink then
+        return (socketutil.file_sink(fh))
+    end
+    return ltn12.sink.file(fh)
+end
+
 -- An ltn12 sink that aborts once more than `limit` bytes arrive.
 local function cappedSink(inner, limit)
     local total = 0
@@ -252,14 +269,23 @@ function Mealie:getBaseUrl()
     return (base:gsub("/+$", ""))
 end
 
-function Mealie:getRecipeDir()
+-- The recipe folder path, without creating it.
+function Mealie:recipeDirPath()
     local dir = self:get("recipe_dir")
     if not dir or dir == "" then
         local home = G_reader_settings:readSetting("home_dir") or "/mnt/us/documents"
         dir = home .. "/Mealie"
     end
-    dir = dir:gsub("/+$", "")
-    util.makePath(dir .. "/")
+    return (dir:gsub("/+$", ""))
+end
+
+-- The recipe folder, created on first use (once per path, not on every call).
+function Mealie:getRecipeDir()
+    local dir = self:recipeDirPath()
+    if self._made_dir ~= dir then
+        util.makePath(dir .. "/")
+        self._made_dir = dir
+    end
     return dir
 end
 
@@ -269,7 +295,7 @@ function Mealie:isRecipeFile(path)
         return false
     end
     local dir, name = path:match("^(.*)/([^/]+)%.html$")
-    return dir ~= nil and isUuid(name) and samePath(dir, self:getRecipeDir())
+    return dir ~= nil and isUuid(name) and samePath(dir, self:recipeDirPath())
 end
 
 ---------------------------------------------------------------------------
@@ -342,7 +368,18 @@ function Mealie:httpRequest(reqt)
         end
         reqt.create = TLS.create(cafile)
     end
-    return socket.skip(1, http.request(reqt))
+    -- Never route through KOReader's global HTTP proxy (Settings > Network):
+    -- LuaSocket sends the full request, token included, to the proxy in clear
+    -- for http URLs, and can't tunnel https. Mealie is reached directly.
+    local saved_proxy = http.PROXY
+    http.PROXY = nil
+    reqt.proxy = nil
+    local results = { pcall(http.request, reqt) }
+    http.PROXY = saved_proxy
+    if not results[1] then
+        return tostring(results[2]), nil, nil
+    end
+    return socket.skip(1, unpack(results, 2, table.maxn(results)))
 end
 
 function Mealie:describeError(code, status, headers)
@@ -353,6 +390,11 @@ function Mealie:describeError(code, status, headers)
         end
         if msg:find("response too large", 1, true) then
             return _("The server sent an unexpectedly large response; it was discarded.")
+        end
+        local timeout_msg = socketutil.describe_error and socketutil.describe_error(msg,
+            socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT)
+        if timeout_msg then
+            return timeout_msg
         end
         if msg:find("certificate", 1, true) then
             return T(_("Secure connection refused: %1\n\nThe server's TLS certificate is not trusted or does not match the server name. Nothing was sent. If the server uses a private CA, set a custom CA file in Settings."), msg)
@@ -383,16 +425,16 @@ function Mealie:requestJson(method, path, opts)
         return nil, base_err
     end
     local sink = {}
+    socketutil:set_timeout(socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT)
     local reqt = {
         url = base .. path,
         method = method,
         headers = opts.headers or self:buildHeaders(),
-        sink = cappedSink(ltn12.sink.table(sink), MAX_JSON_BYTES),
+        sink = cappedSink(timedTableSink(sink), MAX_JSON_BYTES),
     }
     if opts.body then
         reqt.source = ltn12.source.string(opts.body)
     end
-    socketutil:set_timeout(socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT)
     local code, resp_headers, status = self:httpRequest(reqt)
     socketutil:reset_timeout()
     if code ~= (opts.expect or 200) then
@@ -449,7 +491,16 @@ function Mealie:requestToken(username, password)
     if type(created.token) ~= "string" or created.token == "" then
         return nil, _("Mealie did not return an API token.")
     end
-    return created.token
+    -- Revoke the token from the previous login on this device, so logging in
+    -- again doesn't pile up five-year tokens in Mealie. Best effort: it fails
+    -- harmlessly if the old token belonged to another user or is already gone.
+    local old_id = tonumber(self:get("token_id"))
+    local new_id = tonumber(created.id)
+    if old_id and old_id >= 0 and old_id % 1 == 0 and old_id ~= new_id then
+        self:requestJson("DELETE", string.format("/api/users/api-tokens/%d", old_id),
+            { headers = self:buildHeaders(nil, data.access_token) })
+    end
+    return created.token, (new_id and new_id >= 0 and new_id % 1 == 0) and new_id or nil
 end
 
 -- Paged recipe list. Returns the page table (items, total, page, total_pages).
@@ -833,7 +884,7 @@ function Mealie:fetchImage(base, id, dir)
         url = base .. "/api/media/recipes/" .. id .. "/images/min-original.webp",
         method = "GET",
         headers = headers,
-        sink = cappedSink(ltn12.sink.file(fh), MAX_IMAGE_BYTES),
+        sink = cappedSink(timedFileSink(fh), MAX_IMAGE_BYTES),
     }
     socketutil:reset_timeout()
     if io.type(fh) == "file" then
@@ -1100,9 +1151,11 @@ function Mealie:loginDialog(refresh)
                     local fields = dialog:getFields()
                     UIManager:close(dialog)
                     NetworkMgr:runWhenConnected(function()
-                        local token, err = self:requestToken(fields[1], fields[2])
+                        local token, err_or_id = self:requestToken(fields[1], fields[2])
+                        local err = err_or_id
                         if token then
                             self:set("token", token)
+                            self:set("token_id", err_or_id)
                             UIManager:show(InfoMessage:new{ text = T(_("Logged in. An API token named “%1 …” was created in Mealie and saved here (password not stored)."), TOKEN_NAME) })
                             refresh()
                         else

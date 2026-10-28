@@ -97,17 +97,24 @@ package.preload["ltn12"] = function()
     }
 end
 package.preload["socket"] = function() return { skip = function(n, ...) return select(n + 1, ...) end } end
-package.preload["socket.http"] = function()
-    return { request = function(opts)
-        local code, h, s = py_request(opts)
-        if code == nil then return nil, h end
-        return 1, code, h, s
-    end }
+local proxy_seen = {}
+local HTTP = {}
+HTTP.request = function(opts)
+    proxy_seen[#proxy_seen + 1] = tostring(HTTP.PROXY or opts.proxy or "none")
+    local code, h, s = py_request(opts)
+    if code == nil then return nil, h end
+    return 1, code, h, s
 end
+package.preload["socket.http"] = function() return HTTP end
 package.preload["ssl"] = function() return {} end
 package.preload["ssl.https"] = function() return { TIMEOUT = 60 } end
+local timed_sinks = { table = 0, file = 0 }
 package.preload["socketutil"] = function()
+    local ltn12 = require("ltn12")
     return { set_timeout = function() end, reset_timeout = function() end,
+             table_sink = function(t) timed_sinks.table = timed_sinks.table + 1; return ltn12.sink.table(t), t end,
+             file_sink = function(fh) timed_sinks.file = timed_sinks.file + 1; return ltn12.sink.file(fh) end,
+             describe_error = function(code) if code == "sink timeout" then return "Transfer aborted: took too long. (sink timeout)" end end,
              LARGE_BLOCK_TIMEOUT = 1, LARGE_TOTAL_TIMEOUT = 1, FILE_BLOCK_TIMEOUT = 1, FILE_TOTAL_TIMEOUT = 1 }
 end
 package.preload["libs/libkoreader-lfs"] = function()
@@ -414,6 +421,20 @@ p:set("keepawake_active", true)
 executed = {}
 Mealie:new{ ui = fmUi() }
 check(executed[1] == "lipc-set-prop com.lab126.powerd preventScreenSaver 0" and p:get("keepawake_active") == nil, "stale keep-awake released on next start")
+-- another plugin (AutoTurn) had paused AutoSuspend, then switched it off while the recipe was open
+executed = {}
+PluginShare.pause_auto_suspend = true
+rd = Mealie:new{ ui = readerUi(page) }
+PluginShare.pause_auto_suspend = false
+rd:onCloseDocument()
+check(PluginShare.pause_auto_suspend == false and PluginShare.keepalive == nil, "others' later change to the pause is kept")
+-- another plugin changed the pause while open, it was ours: leave its value
+PluginShare.pause_auto_suspend = nil
+rd = Mealie:new{ ui = readerUi(page) }
+PluginShare.pause_auto_suspend = false
+rd:onCloseDocument()
+check(PluginShare.pause_auto_suspend == false, "value changed by someone else is not overwritten")
+PluginShare.pause_auto_suspend = nil
 -- Kobo: no lipc, only pause_auto_suspend
 is_kindle = false
 executed = {}
@@ -484,6 +505,36 @@ p:set("token", "bad"); check(errorText(function() p:showAllRecipes() end):find("
 check(errorText(function() p:saveRecipe({ id = CHILI, name = "x" }) end):find("401"), "401 on recipe")
 p:set("token", "LONGTOKEN")
 check(errorText(function() p:saveRecipe({ id = "00000000-0000-4000-8000-0000000000ff", name = "gone" }) end):find("404"), "404 on missing recipe")
+
+-- ---- re-login revokes this device's previous token ---------------------------------------------
+p:set("token_id", 7)
+py_clear_requests()
+local tok2, id2 = p:requestToken("kindle", "p&ss word")
+r = reqs()
+check(tok2 == "LONGTOKEN" and id2 == 1, "login returns token and its id")
+check(r[3] and r[3].method == "DELETE" and r[3].url == "https://mealie.test/api/users/api-tokens/7" and r[3].headers.Authorization == "Bearer SESSIONJWT", "previous token revoked with the session token")
+p:set("token_id", 1)
+py_clear_requests()
+p:requestToken("kindle", "p&ss word")
+check(#reqs() == 2, "no revoke when the id is unchanged")
+p:set("token_id", "1; DROP")
+py_clear_requests()
+p:requestToken("kindle", "p&ss word")
+check(#reqs() == 2, "non-numeric stored id ignored")
+shown = {}
+p:showSettings(); local st2 = lastShown()
+sel(st2, findItem(st2, "Log in with username/password")); lastShown()._fields = { "kindle", "p&ss word" }; lastShown().buttons[1][2].callback()
+check(p:get("token_id") == 1 and p:get("token") == "LONGTOKEN", "login dialog stores token id")
+
+-- ---- proxy, timeouts --------------------------------------------------------------------------
+HTTP.PROXY = "http://proxy.lan:3128"
+proxy_seen = {}
+shown = {}
+p:showAllRecipes()
+check(proxy_seen[1] == "none" and HTTP.PROXY == "http://proxy.lan:3128", "global HTTP proxy bypassed and restored")
+HTTP.PROXY = nil
+check(timed_sinks.table > 0 and timed_sinks.file > 0, "KOReader's total-timeout sinks used for JSON and photos")
+check(p:describeError("sink timeout"):find("took too long"), "total timeout explained")
 
 -- ---- transport security ---------------------------------------------------------------------
 py_clear_requests()

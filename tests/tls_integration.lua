@@ -72,5 +72,11 @@ check(not tok and terr:find("Secure connection refused"), "login refused on untr
 p:set("ca_file", D .. "/ca.pem")
 tok, terr = p:requestToken("kindle", "PASSWORD10")
 check(tok == "T", "login + token mint over verified TLS", terr)
+-- 11. a configured KOReader HTTP proxy is bypassed (direct, verified connection) and restored
+local http = require("socket.http")
+http.PROXY = "http://127.0.0.1:9" -- nothing listens there
+data, err = p:apiGet("/api/recipes?x=11")
+check(data and data.ok == true and http.PROXY == "http://127.0.0.1:9", "proxy bypassed and restored", err)
+http.PROXY = nil
 print(("RESULT pass=%d fail=%d"):format(pass, fail))
 os.exit(fail == 0 and 0 or 1)

@@ -72,11 +72,20 @@ function M.start(limit_seconds)
         return
     end
     local share = M.deps.pluginshare()
-    M.prev = { keepalive = share.keepalive, pause = share.pause_auto_suspend }
-    if isKindle() and not share.keepalive then
+    local kindle = isKindle()
+    -- Remember what was there and exactly what we changed, so stop() only
+    -- undoes our own changes.
+    M.prev = {
+        keepalive = share.keepalive,
+        pause = share.pause_auto_suspend,
+        set_lipc = kindle and not share.keepalive,
+        set_keepalive = kindle and not share.keepalive,
+        set_pause = not share.pause_auto_suspend,
+    }
+    if M.prev.set_lipc then
         M.deps.exec(LIPC_ON)
     end
-    if isKindle() then
+    if kindle then
         share.keepalive = true
     end
     share.pause_auto_suspend = true
@@ -92,11 +101,17 @@ function M.stop()
     end
     local share = M.deps.pluginshare()
     local prev = M.prev or {}
-    if isKindle() and not prev.keepalive then
-        M.deps.exec(LIPC_OFF)
+    -- If something else changed a value while the recipe was open (e.g. AutoTurn
+    -- switched its pause off), leave its choice alone.
+    if prev.set_keepalive and share.keepalive == true then
+        share.keepalive = prev.keepalive
+        if prev.set_lipc then
+            M.deps.exec(LIPC_OFF)
+        end
     end
-    share.keepalive = prev.keepalive
-    share.pause_auto_suspend = prev.pause
+    if prev.set_pause and share.pause_auto_suspend == true then
+        share.pause_auto_suspend = prev.pause
+    end
     M.prev = nil
     M.active = false
     M.deps.persist(false)

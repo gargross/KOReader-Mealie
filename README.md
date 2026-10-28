@@ -27,7 +27,7 @@ On the Kindle: **Tools → Mealie recipes → Settings**
 | Setting | What to enter |
 |---|---|
 | Server URL | e.g. `mealie.example.com` (https is assumed) |
-| Log in with username/password | **Easiest.** Creates an API token named `KOReader <date>` in Mealie and stores only that token. The password isn't saved. |
+| Log in with username/password | **Easiest.** Creates an API token named `KOReader <date>` in Mealie and stores only that token. The password isn't saved. Logging in again revokes the device's previous token. |
 | API token | Alternative to logging in. A Mealie token is about 200 characters, so put it in the settings file over USB instead of typing it (below). |
 | Cloudflare Access headers | Only if the server sits behind Cloudflare Access and you use it away from home. |
 | Custom CA certificate file | Leave empty for Let's Encrypt or any public CA. Set a PEM path only for a private CA such as Caddy `tls internal`. |
@@ -94,7 +94,7 @@ tests/           behaviour harness (lupa) + real-TLS tests (LuaSec)
 
 ```
 pip install lupa
-python3 -I tests/harness.py mealie.koplugin           # 138 behaviour/security checks
+python3 -I tests/harness.py mealie.koplugin           # 148 behaviour/security checks
 sudo apt install luajit lua-socket lua-sec lua-cjson lua-filesystem
 tests/run_tls_tests.sh                                 # real LuaSec TLS tests
 ```
