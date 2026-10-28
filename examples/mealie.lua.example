@@ -1,0 +1,9 @@
+-- KOReader Mealie plugin settings.
+-- Replace PASTE_MEALIE_API_TOKEN (keep the quotes), then copy this file to
+-- Internal Storage\koreader\settings\mealie.lua with KOReader closed.
+-- Alternatively leave the token out and use Settings > "Log in with
+-- username/password" on the Kindle, which creates the token for you.
+return {
+    ["server_url"] = "https://mealie.example.com",
+    ["token"] = "PASTE_MEALIE_API_TOKEN",
+}
