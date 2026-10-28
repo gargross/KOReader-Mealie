@@ -36,12 +36,34 @@ M.deps = {
     uimanager = function() return require("ui/uimanager") end,
     pluginshare = function() return require("pluginshare") end,
     exec = function(cmd) return os.execute(cmd) end,
+    -- Reads a powerd property back, to confirm a change took effect.
+    query = function(cmd)
+        local fh = io.popen(cmd .. " 2>&1")
+        if not fh then
+            return "?"
+        end
+        local out = fh:read("*a") or ""
+        fh:close()
+        return (out:gsub("%s+$", ""))
+    end,
+    log = function(...)
+        local ok, logger = pcall(require, "logger")
+        if ok and logger and logger.info then
+            logger.info("Mealie keep-awake:", ...)
+        end
+    end,
     now = function() return os.time() end,
     persist = function(_value) end,
 }
 
 local LIPC_ON = "lipc-set-prop com.lab126.powerd preventScreenSaver 1"
 local LIPC_OFF = "lipc-set-prop com.lab126.powerd preventScreenSaver 0"
+local LIPC_GET = "lipc-get-prop com.lab126.powerd preventScreenSaver"
+
+local function lipc(cmd)
+    local rc = M.deps.exec(cmd)
+    M.deps.log(cmd, "-> exit", tostring(rc), "| now:", M.deps.query(LIPC_GET))
+end
 
 local function isKindle()
     local ok, Device = pcall(M.deps.device)
@@ -82,8 +104,10 @@ function M.start(limit_seconds)
         set_keepalive = kindle and not share.keepalive,
         set_pause = not share.pause_auto_suspend,
     }
+    M.deps.log("start; kindle:", tostring(kindle), "limit s:", tostring(M.limit),
+        "prev keepalive:", tostring(M.prev.keepalive), "prev pause:", tostring(M.prev.pause))
     if M.prev.set_lipc then
-        M.deps.exec(LIPC_ON)
+        lipc(LIPC_ON)
     end
     if kindle then
         share.keepalive = true
@@ -106,7 +130,7 @@ function M.stop()
     if prev.set_keepalive and share.keepalive == true then
         share.keepalive = prev.keepalive
         if prev.set_lipc then
-            M.deps.exec(LIPC_OFF)
+            lipc(LIPC_OFF)
         end
     end
     if prev.set_pause and share.pause_auto_suspend == true then
@@ -115,13 +139,15 @@ function M.stop()
     M.prev = nil
     M.active = false
     M.deps.persist(false)
+    M.deps.log("stopped")
 end
 
 -- Undo a keep-awake that a previous KOReader session left on (crash).
 function M.cleanupStale(was_persisted)
     if was_persisted and not M.active then
+        M.deps.log("releasing a keep-awake left on by a previous session")
         if isKindle() then
-            M.deps.exec(LIPC_OFF)
+            lipc(LIPC_OFF)
         end
         M.deps.persist(false)
         return true
@@ -141,6 +167,7 @@ function M.check()
     end
     local idle = M.deps.now() - M.last_input
     if idle >= M.limit then
+        M.deps.log("idle limit reached after", tostring(idle), "s")
         M.stop()
     else
         schedule(M.limit - idle)

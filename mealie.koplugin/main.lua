@@ -158,6 +158,10 @@ function Mealie:init()
     self.ui.menu:registerToMainMenu(self)
 
     local doc_file = self.ui.document and self.ui.document.file
+    if doc_file then
+        KeepAwake.deps.log("document:", doc_file, "| recipe:", tostring(self:isRecipeFile(doc_file)),
+            "| recipe folder:", self:recipeDirPath(), "| keep_awake:", tostring(self:get("keep_awake", true)))
+    end
     if doc_file and self:isRecipeFile(doc_file) then
         -- A recipe is being read: keep the device awake if enabled.
         if self:get("keep_awake", true) then
@@ -194,7 +198,16 @@ function Mealie:onInputEvent()
     KeepAwake.touch()
 end
 
+-- Logged so a test can tell which mechanism put the device to sleep.
+function Mealie:onSuspend()
+    if KeepAwake.active then
+        KeepAwake.deps.log("device suspending while keep-awake is active; powerd now:",
+            KeepAwake.deps.query("lipc-get-prop com.lab126.powerd preventScreenSaver"))
+    end
+end
+
 function Mealie:onCloseDocument()
+    KeepAwake.deps.log("document closed")
     if self.started_keepawake then
         KeepAwake.stop()
         self.started_keepawake = false

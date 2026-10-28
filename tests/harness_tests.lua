@@ -145,6 +145,9 @@ local KA = Mealie.KeepAwake
 check(KA ~= nil, "KeepAwake exposed for tests")
 local clock = 1000000
 KA.deps.now = function() return clock end
+local logged = {}
+KA.deps.query = function() return "1" end
+KA.deps.log = function(...) logged[#logged + 1] = table.concat({ ... }, " ") end
 
 local opened
 local function fmUi() return { menu = { registerToMainMenu = function() end }, openFile = function(self, f) opened = f end } end
@@ -375,6 +378,9 @@ local function readerUi(file) return { document = { file = file }, menu = { regi
 executed = {}; hooks = {}
 local rd = Mealie:new{ ui = readerUi(page) }
 check(executed[1] == "lipc-set-prop com.lab126.powerd preventScreenSaver 1" and #executed == 1, "Kindle: preventScreenSaver 1 on open")
+local logtext = table.concat(logged, "\n")
+check(logtext:find("recipe: true", 1, true) and logtext:find("start; kindle: true", 1, true)
+    and logtext:find("preventScreenSaver 1 -> exit 0 | now: 1", 1, true), "keep-awake start logged with powerd readback: " .. logtext)
 check(PluginShare.keepalive == true and PluginShare.pause_auto_suspend == true, "AutoSuspend paused and told keepalive is on")
 check(p:get("keepawake_active") == true, "keep-awake flag persisted")
 check(hooks[1] and hooks[1].name == "InputEvent" and hooks[1].w == rd, "input hook registered")
